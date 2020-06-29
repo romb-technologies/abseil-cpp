@@ -27,6 +27,8 @@ project(absl LANGUAGES CXX VERSION 20250512)
 set(ABSL_SOVERSION "2505.0.0")
 include(CTest)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # Output directory is correct by default for most build setups. However, when
 # building Abseil as a DLL, it is important to have the DLL in the same
 # directory as the executable using it. Thus, we put all executables in a single
