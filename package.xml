@@ -4,7 +4,7 @@
   <version>1.0.0</version>
   <description>The abseil_cpp package</description>
   
-  <maintainer email="ian.petek@romb-technologies.com">
+  <maintainer email="ian.petek@romb-technologies.hr">
     Ian Petek
   </maintainer>
   <license>Apache 2.0</license>
