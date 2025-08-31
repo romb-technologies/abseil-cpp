@@ -13,14 +13,14 @@
 //   limitations under the License.
 
 #if !defined(HAS_STRPTIME)
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
-#define HAS_STRPTIME 1  // assume everyone has strptime() except windows
+#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(__VXWORKS__)
+#define HAS_STRPTIME 1  // Assume everyone else has strptime().
 #endif
 #endif
 
 #if defined(HAS_STRPTIME) && HAS_STRPTIME
-#if !defined(_XOPEN_SOURCE)
-#define _XOPEN_SOURCE  // Definedness suffices for strptime.
+#if !defined(_XOPEN_SOURCE) && !defined(__FreeBSD__) && !defined(__OpenBSD__)
+#define _XOPEN_SOURCE 500  // Exposes definitions for SUSv2 (UNIX 98).
 #endif
 #endif
 
@@ -46,7 +46,7 @@
 #endif
 
 #include "absl/time/internal/cctz/include/cctz/civil_time.h"
-#include "time_zone_if.h"
+#include "absl/time/internal/cctz/src/time_zone_if.h"
 
 namespace absl {
 ABSL_NAMESPACE_BEGIN
@@ -654,14 +654,23 @@ const char* ParseTM(const char* dp, const char* fmt, std::tm* tm) {
 }
 
 // Sets year, tm_mon and tm_mday given the year, week_num, and tm_wday,
-// and the day on which weeks are defined to start.
-void FromWeek(int week_num, weekday week_start, year_t* year, std::tm* tm) {
+// and the day on which weeks are defined to start.  Returns false if year
+// would need to move outside its bounds.
+bool FromWeek(int week_num, weekday week_start, year_t* year, std::tm* tm) {
   const civil_year y(*year % 400);
   civil_day cd = prev_weekday(y, week_start);  // week 0
   cd = next_weekday(cd - 1, FromTmWday(tm->tm_wday)) + (week_num * 7);
-  *year += cd.year() - y.year();
+  if (const year_t shift = cd.year() - y.year()) {
+    if (shift > 0) {
+      if (*year > std::numeric_limits<year_t>::max() - shift) return false;
+    } else {
+      if (*year < std::numeric_limits<year_t>::min() - shift) return false;
+    }
+    *year += shift;
+  }
   tm->tm_mon = cd.month() - 1;
   tm->tm_mday = cd.day();
+  return true;
 }
 
 }  // namespace
@@ -965,7 +974,12 @@ bool parse(const std::string& format, const std::string& input,
   }
 
   // Compute year, tm.tm_mon and tm.tm_mday if we parsed a week number.
-  if (week_num != -1) FromWeek(week_num, week_start, &year, &tm);
+  if (week_num != -1) {
+    if (!FromWeek(week_num, week_start, &year, &tm)) {
+      if (err != nullptr) *err = "Out-of-range field";
+      return false;
+    }
+  }
 
   const int month = tm.tm_mon + 1;
   civil_second cs(year, month, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);

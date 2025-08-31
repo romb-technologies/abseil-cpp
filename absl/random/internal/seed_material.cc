@@ -23,16 +23,23 @@
 #endif
 
 #include <algorithm>
+#include <cassert>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
+#include "absl/base/config.h"
+#include "absl/base/dynamic_annotations.h"
 #include "absl/base/internal/raw_logging.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
+#include "absl/types/optional.h"
+#include "absl/types/span.h"
 
 #if defined(__native_client__)
 
@@ -48,6 +55,18 @@
 #elif defined(__Fuchsia__)
 #include <zircon/syscalls.h>
 
+#endif
+
+#if defined(__GLIBC__) && \
+    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25))
+// glibc >= 2.25 has getentropy()
+#define ABSL_RANDOM_USE_GET_ENTROPY 1
+#endif
+
+#if defined(__EMSCRIPTEN__)
+#include <sys/random.h>
+// Emscripten has getentropy, but it resides in a different header.
+#define ABSL_RANDOM_USE_GET_ENTROPY 1
 #endif
 
 #if defined(ABSL_RANDOM_USE_BCRYPT)
@@ -122,32 +141,70 @@ bool ReadSeedMaterialFromOSEntropyImpl(absl::Span<uint32_t> values) {
 
 #else
 
+#if defined(ABSL_RANDOM_USE_GET_ENTROPY)
+// On *nix, use getentropy() if supported. Note that libc may support
+// getentropy(), but the kernel may not, in which case this function will return
+// false.
+bool ReadSeedMaterialFromGetEntropy(absl::Span<uint32_t> values) {
+  auto buffer = reinterpret_cast<uint8_t*>(values.data());
+  size_t buffer_size = sizeof(uint32_t) * values.size();
+  while (buffer_size > 0) {
+    // getentropy() has a maximum permitted length of 256.
+    size_t to_read = std::min<size_t>(buffer_size, 256);
+    int result = getentropy(buffer, to_read);
+    if (result < 0) {
+      return false;
+    }
+    // https://github.com/google/sanitizers/issues/1173
+    // MemorySanitizer can't see through getentropy().
+    ABSL_ANNOTATE_MEMORY_IS_INITIALIZED(buffer, to_read);
+    buffer += to_read;
+    buffer_size -= to_read;
+  }
+  return true;
+}
+#endif  // defined(ABSL_RANDOM_GETENTROPY)
+
 // On *nix, read entropy from /dev/urandom.
-bool ReadSeedMaterialFromOSEntropyImpl(absl::Span<uint32_t> values) {
+bool ReadSeedMaterialFromDevURandom(absl::Span<uint32_t> values) {
   const char kEntropyFile[] = "/dev/urandom";
 
   auto buffer = reinterpret_cast<uint8_t*>(values.data());
   size_t buffer_size = sizeof(uint32_t) * values.size();
 
   int dev_urandom = open(kEntropyFile, O_RDONLY);
-  bool success = (-1 != dev_urandom);
-  if (!success) {
+  if (dev_urandom < 0) {
+    ABSL_RAW_LOG(ERROR, "Failed to open /dev/urandom.");
     return false;
   }
 
-  while (success && buffer_size > 0) {
-    int bytes_read = read(dev_urandom, buffer, buffer_size);
+  while (buffer_size > 0) {
+    ssize_t bytes_read = read(dev_urandom, buffer, buffer_size);
     int read_error = errno;
-    success = (bytes_read > 0);
-    if (success) {
-      buffer += bytes_read;
-      buffer_size -= bytes_read;
-    } else if (bytes_read == -1 && read_error == EINTR) {
-      success = true;  // Need to try again.
+    if (bytes_read == -1 && read_error == EINTR) {
+      // Interrupted, try again.
+      continue;
+    } else if (bytes_read <= 0) {
+      // EOF, or error.
+      break;
     }
+    buffer += bytes_read;
+    buffer_size -= static_cast<size_t>(bytes_read);
   }
+
   close(dev_urandom);
-  return success;
+  return buffer_size == 0;
+}
+
+bool ReadSeedMaterialFromOSEntropyImpl(absl::Span<uint32_t> values) {
+#if defined(ABSL_RANDOM_USE_GET_ENTROPY)
+  if (ReadSeedMaterialFromGetEntropy(values)) {
+    return true;
+  }
+#endif
+  // Libc may support getentropy, but the kernel may not, so we still have
+  // to fallback to ReadSeedMaterialFromDevURandom().
+  return ReadSeedMaterialFromDevURandom(values);
 }
 
 #endif
@@ -203,8 +260,7 @@ absl::optional<uint32_t> GetSaltMaterial() {
   static const auto salt_material = []() -> absl::optional<uint32_t> {
     uint32_t salt_value = 0;
 
-    if (random_internal::ReadSeedMaterialFromOSEntropy(
-            MakeSpan(&salt_value, 1))) {
+    if (ReadSeedMaterialFromOSEntropy(absl::MakeSpan(&salt_value, 1))) {
       return salt_value;
     }
 

@@ -14,31 +14,58 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This script is invoked on Kokoro to test Abseil on macOS.
-# It is not hermetic and may break when Kokoro is updated.
-
 set -euox pipefail
+
+# Use Xcode 16.0
+sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+
+export CMAKE_BUILD_PARALLEL_LEVEL=$(sysctl -n hw.ncpu)
+export CTEST_PARALLEL_LEVEL=$(sysctl -n hw.ncpu)
 
 if [[ -z ${ABSEIL_ROOT:-} ]]; then
   ABSEIL_ROOT="$(dirname ${0})/.."
 fi
 ABSEIL_ROOT=$(realpath ${ABSEIL_ROOT})
 
+source "${ABSEIL_ROOT}/ci/cmake_common.sh"
+
 if [[ -z ${ABSL_CMAKE_BUILD_TYPES:-} ]]; then
   ABSL_CMAKE_BUILD_TYPES="Debug"
 fi
 
-for compilation_mode in ${ABSL_CMAKE_BUILD_TYPES}; do
-  BUILD_DIR=$(mktemp -d ${compilation_mode}.XXXXXXXX)
-  cd ${BUILD_DIR}
+if [[ -z ${ABSL_CMAKE_BUILD_SHARED:-} ]]; then
+  ABSL_CMAKE_BUILD_SHARED="OFF ON"
+fi
 
-  # TODO(absl-team): Enable -Werror once all warnings are fixed.
-  time cmake ${ABSEIL_ROOT} \
-    -GXcode \
-    -DCMAKE_BUILD_TYPE=${compilation_mode} \
-    -DCMAKE_CXX_STANDARD=11 \
-    -DABSL_USE_GOOGLETEST_HEAD=ON \
-    -DABSL_RUN_TESTS=ON
-  time cmake --build .
-  time ctest -C ${compilation_mode} --output-on-failure
+if [[ -z ${ABSL_CMAKE_BUILD_MONOLITHIC_SHARED_LIBS:-} ]]; then
+  ABSL_CMAKE_BUILD_MONOLITHIC_SHARED_LIBS="OFF ON"
+fi
+
+for compilation_mode in ${ABSL_CMAKE_BUILD_TYPES}; do
+  for build_shared in ${ABSL_CMAKE_BUILD_SHARED}; do
+    if [[ $build_shared == "OFF" ]]; then
+      monolithic_shared_options="OFF"
+    else
+      monolithic_shared_options="$ABSL_CMAKE_BUILD_MONOLITHIC_SHARED_LIBS"
+    fi
+
+    for monolithic_shared in $monolithic_shared_options; do
+      BUILD_DIR=$(mktemp -d ${compilation_mode}.XXXXXXXX)
+      cd ${BUILD_DIR}
+
+      # TODO(absl-team): Enable -Werror once all warnings are fixed.
+      time cmake ${ABSEIL_ROOT} \
+        -GXcode \
+        -DBUILD_SHARED_LIBS=${build_shared} \
+        -DABSL_BUILD_TESTING=ON \
+        -DCMAKE_BUILD_TYPE=${compilation_mode} \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--no-undefined" \
+        -DABSL_BUILD_MONOLITHIC_SHARED_LIBS=${monolithic_shared} \
+        -DABSL_GOOGLETEST_DOWNLOAD_URL="${ABSL_GOOGLETEST_DOWNLOAD_URL}"
+      time cmake --build .
+      time TZDIR=${ABSEIL_ROOT}/absl/time/internal/cctz/testdata/zoneinfo \
+        ctest -C ${compilation_mode} --output-on-failure
+    done
+  done
 done

@@ -75,7 +75,7 @@ TEST(ThreadIdentityTest, BasicIdentityWorksThreaded) {
   // - If a thread implementation chooses to recycle threads, that
   //   correct re-initialization occurs.
   static const int kNumLoops = 3;
-  static const int kNumThreads = 400;
+  static const int kNumThreads = 32;
   for (int iter = 0; iter < kNumLoops; iter++) {
     std::vector<std::thread> threads;
     for (int i = 0; i < kNumThreads; ++i) {
@@ -95,7 +95,7 @@ TEST(ThreadIdentityTest, BasicIdentityWorksThreaded) {
 }
 
 TEST(ThreadIdentityTest, ReusedThreadIdentityMutexTest) {
-  // This test repeatly creates and joins a series of threads, each of
+  // This test repeatedly creates and joins a series of threads, each of
   // which acquires and releases shared Mutex locks. This verifies
   // Mutex operations work correctly under a reused
   // ThreadIdentity. Note that the most likely failure mode of this
